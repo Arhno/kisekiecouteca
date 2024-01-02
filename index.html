@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+		<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+		<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
+		<script src="/socket.io/socket.io.js"></script>
+		<script>
+			const socket = io();
+			var frameApi = null;
+			var controller = null;
+			var currentSelection = null;
+			var currentAnswer = null;
+			var timerDuration = null;
+			var timeSinceStart = 0;
+			var userIdToButtonId = {};
+
+			window.onSpotifyIframeApiReady = (IFrameAPI) => {
+			  frameApi = IFrameAPI;
+			};
+			
+			function startTimerBar(duration) {
+				timerDuration = duration;
+				timeSinceStart = 0;
+				$("#timer").css("width", "0%");
+				var timerCallback = () => {
+					timeSinceStart += 1;
+					var width = Math.floor(timeSinceStart/timerDuration * 100);
+					$("#timer").css("width", width + "%");
+					if (timeSinceStart < timerDuration) {
+						setTimeout(timerCallback, 1000);
+					}
+				}
+				setTimeout(timerCallback, 500);
+			}
+
+			function playTrack(uri) {
+				console.log("play track with uri " + uri);
+				if (controller == null) {
+					//create the controller
+					const element = document.getElementById('embed-iframe');
+					const options = {
+						height: 150,
+						uri: uri
+					};
+					const callback = (EmbedController) => {};
+					frameApi.createController(element, options, (EmbedController) => {
+						controller = EmbedController;
+						controller.play();
+					});
+				} else {
+					// use the existing controller
+					controller.loadUri(uri);
+					controller.play();
+				}
+			}
+			
+			function processGuess(userId, buttonId) {
+				console.log("clicked on button " + buttonId + " was on " + currentSelection);
+				socket.emit('new guess', {guessId: userId});
+				$("#"+ buttonId).removeClass("btn-outline-secondary");
+				$("#"+ buttonId).removeClass("text-dark");
+				$("#"+ buttonId).addClass("btn-primary");
+				if (currentSelection != null && currentSelection != buttonId) {
+					$("#"+ currentSelection).removeClass("btn-primary");
+					$("#"+ currentSelection).addClass("btn-outline-secondary");
+					$("#"+ currentSelection).addClass("text-dark");
+				}
+				currentSelection = buttonId;
+			}
+			
+			function addGuessButtons(allUsers) {
+				var i = 0;
+				for (const userId in allUsers) {
+					$("#guess").append("<button id='user" + i + "' type='button'  class='btn btn-outline-secondary text-dark w-100'>" + allUsers[userId] + "</button>");
+					const buttonId = "user" + i;
+					userIdToButtonId[userId] = buttonId;
+					$("#"+ buttonId).click(() => {
+						console.log("clicked on user " + allUsers[userId]);
+						processGuess(userId, buttonId);
+					});
+					i++;
+				}
+			}
+
+			function displayAnswer(answerId) {
+				const buttonId = userIdToButtonId[answerId];
+				$("#"+ buttonId).removeClass("btn-outline-secondary");
+				$("#"+ buttonId).removeClass("text-dark");
+				$("#"+ buttonId).removeClass("btn-primary");
+				$("#"+ buttonId).addClass("btn-success");
+
+				if (buttonId != currentSelection) {
+					$("#"+ currentSelection).removeClass("btn-outline-secondary");
+					$("#"+ currentSelection).removeClass("text-dark");
+					$("#"+ currentSelection).removeClass("btn-primary");
+					$("#"+ currentSelection).addClass("btn-danger");
+				}
+				currentAnswer = buttonId;
+			}
+
+			function resetButton() {
+				if (currentSelection != null) {
+					$("#"+ currentSelection).removeClass("btn-primary");
+					$("#"+ currentSelection).removeClass("btn-success");
+					$("#"+ currentSelection).removeClass("btn-danger");
+					$("#"+ currentSelection).addClass("btn-outline-secondary");
+					$("#"+ currentSelection).addClass("text-dark");
+				}
+				
+				if (currentAnswer != null && currentAnswer != currentSelection) {
+					$("#"+ currentAnswer).removeClass("btn-primary");
+					$("#"+ currentAnswer).removeClass("btn-success");
+					$("#"+ currentAnswer).removeClass("btn-danger");
+					$("#"+ currentAnswer).addClass("btn-outline-secondary");
+					$("#"+ currentAnswer).addClass("text-dark");
+				}
+
+				currentAnswer = null;
+				currentSelection = null;
+			}
+
+			function addStartButton() {
+				$("#start").click(() => {
+					socket.emit('start', {});
+					$("#start").addClass('d-none');
+				});
+				$("#start").removeClass('d-none');
+			}
+
+			function changePlayerList(playerList) {
+				$("#playerList").empty();
+				playerList.forEach((player) => {
+					$("#playerList").append("<button type='button'  class='btn btn-outline-secondary  w-100' disabled>" + player.name + "   (" + player.score + ")</button>");
+				});
+			}
+
+			function setRoomName(room) {
+				$("#roomName").append(room);
+			}
+
+			function toogleVisibility() {
+				$("#game").removeClass('d-none');
+				$("#prompt").addClass('d-none');
+			}
+
+			function createRoom(user, playlistId) {
+				$("#joinSection").addClass('d-none');
+				$("#or").addClass('d-none');
+				$("#create").append("     <span class='spinner-border spinner-border-sm' role='status' aria-hidden='true'></span>");
+				$("#create").prop('disabled', true);
+				$("#playlist").prop('disabled', true);
+				socket.emit('new room', {user: user, playlist: playlistId});
+			}
+
+			function joinRoom(user, room) {
+				$("#join").prop('disabled', true);
+				$("#room").prop('disabled', true);
+				$("#createSection").addClass('d-none');
+				$("#or").addClass('d-none');
+				socket.emit('join room', {user: user, roomName: room});
+			}
+			
+			function setupSocketCallback() {
+				socket.on('room init', (data) => {
+					toogleVisibility()
+					addGuessButtons(data.allUsers);
+					setRoomName(data.roomName);
+					if (data.owner) {
+						addStartButton();
+					}
+				});
+
+				socket.on('new trak', (data) => {
+					resetButton();
+					playTrack(data.uri);
+					startTimerBar(30);
+				});
+
+				socket.on('answer', (data) => {
+					displayAnswer(data.id);
+				});
+
+				socket.on('new player list', (data) => {
+					changePlayerList(data.players);
+				});
+			}
+
+			$(document).ready(() => {
+				setupSocketCallback();
+				$("#create").click(() => {
+					playlistUrl = $("#playlist")[0].value;
+					userName = $("#username")[0].value;
+					console.log("playlist to load: " + playlistUrl);
+					playlistId = playlistUrl.split("/").pop()
+					console.log("playlist id: " + playlistId);
+					createRoom(userName, playlistId);
+				});
+
+				$("#join").click(() => {
+					room = $("#room")[0].value;
+					userName = $("#username")[0].value;
+					console.log("connecting to room: " + room);
+					joinRoom(userName, room);
+				});
+			});
+		</script>
+	</head>
+	<body>
+		<div class="container text-sm-center p-5 bg-primary">
+			<h1 class="display-2 text-light">KISEKI écoute ça</h1>
+			<p class="lead text-light">Devinez qui a ajouté quoi dans une playlist collaborative</p>
+		</div>
+		<div class="container" id="prompt">
+			<div class="row">
+				<div class="col-3"></div>
+				<div class="col-6 text-center p-5">
+					<form>
+						<div class="mb-3">
+							<label for="username" class="form-label h2">Qui joue ?</label>
+							<input type="text" id="username" class="form-control" name="username" placeholder="Username">
+						</div>
+					</form>
+				</div>
+			</div>
+			<div class="row text-center">
+				<div id="createSection" class="col-5 text-center p-5 bg-light border">
+					<form>
+						<div class="mb-3">
+							<label id="playlistLabel" for="playlist" class="form-label h2">Créer une room</label>
+							<input type="text" id="playlist" class="form-control" name="playlist" placeholder="playlist colaborative">
+						</div>
+							<button id="create" type="button" class="btn btn-primary">Créer</button>
+					</form>
+				</div>
+				<div id="or" class="col-2 text-center p-5"><p><span class="lead">OU</span></p></div>
+				<div id="joinSection" class="col-5 text-center p-5 bg-light border">
+					<form>
+						<div class="mb-3">
+							<label for="room" class="form-label h2">Rejoindre une room</label>
+							<input type="text" id="room" class="form-control" name="room" placeholder="nom de la room">
+						</div>
+							<button id="join" type="button" class="btn btn-primary">Rejoindre</button>
+					</form>
+				</div>
+			</div>
+		</div>
+		<div id="game" class="container d-none">
+			<div class="row">
+				<div class="col-3 text-center p-5">
+					<p><span class="lead">Room : </span><span id="roomName" class="lead"></span></p>
+					<div id="playerList" class="btn-group-vertical w-100" role="group" aria-label="Vertical button group"></div>
+					<button id="start" type="button" class="btn btn-primary d-none">Start</button>
+				</div>
+				<div class="col-9 text-center p-5">
+					<div id="embed-iframe"></div>
+					<div class="progress">
+						<div id="timer" class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+					</div><br>
+					<div class="container text-center">
+						<div id="guess" class="btn-group-vertical w-100" role="group" aria-label="Vertical button group"></div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+	</body>
+</html>
